@@ -7,14 +7,15 @@ import logging
 import re
 import sys
 import warnings
+import numbers
 
 import requests
 import xmltodict
 from requests.exceptions import RequestException
 
-from .exceptions import InvalidCompanyIDError, AresNoResponseError, AresConnectionError, AresServerError
-from .helpers import normalize_company_id_length
-from .settings import COMPANY_ID_LENGTH, ARES_API_URL
+from exceptions import InvalidCompanyIDError, AresNoResponseError, AresConnectionError, AresServerError
+from helpers import normalize_company_id_length
+from settings import COMPANY_ID_LENGTH, ARES_API_URL, ARES_ES_URL
 
 
 def call_ares(company_id):
@@ -35,15 +36,22 @@ def call_ares(company_id):
     :param company_id: 8-digit number
     :type company_id: unicode|int
     """
-    try:
-        validate_czech_company_id(company_id)
-    except InvalidCompanyIDError:
-        return False
 
-    params = {'ico': company_id}
+    search_by_name = False
+    if isinstance(company_id, numbers.Number):
+        try:
+            validate_czech_company_id(company_id)
+        except InvalidCompanyIDError:
+            return False
+        params = {'ico': company_id}
+        URL = ARES_API_URL
+    else:
+        params = {'obch_jm': company_id}
+        URL = ARES_ES_URL
+        search_by_name = True
 
     try:
-        response = requests.get(ARES_API_URL, params=params)
+        response = requests.get(URL, params=params)
     except RequestException as e:
         raise AresConnectionError('Exception, ' + str(e))
 
@@ -65,31 +73,82 @@ def call_ares(company_id):
         raise AresServerError(ares_fault['faultcode'], ares_fault['faultstring'])
 
     response_root = response_root_wrapper['are:Odpoved']
-    number_of_results = response_root['D:PZA']
+    number_of_results = 0
+    if not search_by_name:
+        number_of_results = response_root['D:PZA']
+    else:
+        number_of_results = response_root['dtt:Pocet_zaznamu']
+
+
 
     if int(number_of_results) == 0:
         return False
 
-    company_record = response_root['D:VBAS']
-    address = company_record['D:AA']
-    full_text_address = address.get('D:AT', '')
+    if search_by_name:
+        company_views = response_root['dtt:V']
+        if isinstance(company_views, list):
+            result_company_info = []
+            for company_bucket in company_views:
+                for company_view in company_bucket['dtt:S']:
+                    result_company_info.append(format_company_info_by_name(company_view))
+        else:
+            company_records = company_views['dtt:S']
+            if isinstance(company_records, list):
+                result_company_info = []
+                for company_view in company_records:
+                    result_company_info.append(format_company_info_by_name(company_view))
+            else:
+                result_company_info = format_company_info_by_name(company_records)
+
+
+    else:
+        company_record = response_root['D:VBAS']
+        address = company_record['D:AA']
+        full_text_address = address.get('D:AT', '')
+
+        result_company_info = {
+            'legal': {
+                'company_name': get_text_value(company_record.get('D:OF')),
+                'company_id': get_text_value(company_record.get('D:ICO')),
+                'company_vat_id': get_text_value(company_record.get('D:DIC')),
+                'legal_form': get_legal_form(company_record.get('D:PF'))
+            },
+            'address': {
+                'region': address.get('D:NOK'),
+                'city': build_city(address.get('D:N'), full_text_address),
+                'city_part': address.get('D:NCO'),
+                'street': build_czech_street(address.get('D:NU', str()), address.get('D:N'),
+                                             address.get('D:NCO'),
+                                             address.get('D:CD') or address.get('D:CA'),
+                                             address.get('D:CO'), full_text_address),
+                'zip_code': get_czech_zip_code(address.get('D:PSC'), full_text_address)
+            }
+        }
+
+    return result_company_info
+
+
+def format_company_info_by_name(company_record):
+    full_text_address = company_record.get('dtt:jmn')
+    city_parts = full_text_address.split(',')
+    if len(city_parts) > 1:
+        city_part = city_parts[1].strip()
+    else:
+        city_part = full_text_address.strip()
 
     result_company_info = {
         'legal': {
-            'company_name': get_text_value(company_record.get('D:OF')),
-            'company_id': get_text_value(company_record.get('D:ICO')),
-            'company_vat_id': get_text_value(company_record.get('D:DIC')),
-            'legal_form': get_legal_form(company_record.get('D:PF'))
+            'company_name': company_record['dtt:ojm'],
+            'company_id': company_record['dtt:ico'],
+            'legal_form': company_record['dtt:pf']
         },
         'address': {
-            'region': address.get('D:NOK'),
-            'city': build_city(address.get('D:N'), full_text_address),
-            'city_part': address.get('D:NCO'),
-            'street': build_czech_street(address.get('D:NU', str()), address.get('D:N'),
-                                         address.get('D:NCO'),
-                                         address.get('D:CD') or address.get('D:CA'),
-                                         address.get('D:CO'), full_text_address),
-            'zip_code': get_czech_zip_code(address.get('D:PSC'), full_text_address)
+            'city': build_city(None, full_text_address),
+            'city_part': city_part,
+            'street': build_czech_street(None, None,
+                                         None,
+                                         None,
+                                         None, full_text_address),
         }
     }
     return result_company_info
@@ -231,7 +290,8 @@ if __name__ == "__main__":
         print('Pass company ID as a function argument')
         sys.exit(2)
 
-    company_id_to_check = sys.argv[1]
+##    company_id_to_check = u"ByteSoft s.r.o." #sys.argv[1]
+    company_id_to_check = u"Byte"  # sys.argv[1]
     ares_response = call_ares(company_id_to_check)
 
     if not ares_response:

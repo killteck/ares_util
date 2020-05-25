@@ -3,7 +3,7 @@
 
 from __future__ import (absolute_import, division, print_function, unicode_literals)
 
-from .settings import COMPANY_ID_LENGTH
+from settings import COMPANY_ID_LENGTH
 
 
 def normalize_company_id_length(business_id):
