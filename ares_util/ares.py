@@ -7,7 +7,6 @@ import logging
 import re
 import sys
 import warnings
-import numbers
 
 import requests
 import xmltodict
@@ -38,7 +37,7 @@ def call_ares(company_id):
     """
 
     search_by_name = False
-    if isinstance(company_id, numbers.Number):
+    if company_id.isdigit():
         try:
             validate_czech_company_id(company_id)
         except InvalidCompanyIDError:
